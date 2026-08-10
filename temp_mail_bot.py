@@ -20,14 +20,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # -------------------- ENVIRONMENT VARIABLES --------------------
-# Get configuration from environment variables
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 CHANNEL_USERNAME = os.environ.get('CHANNEL_USERNAME', '@NCK_Dev')
 CHANNEL_LINK = os.environ.get('CHANNEL_LINK', 'https://t.me/NCK_Dev')
 API_BASE = os.environ.get('API_BASE', 'https://api.mail.tm')
 DB_PATH = os.environ.get('DB_PATH', 'temp_mail.db')
 
-# Validate required environment variables
 if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN environment variable is not set!")
     logger.error("Please set BOT_TOKEN in your environment variables.")
@@ -44,11 +42,9 @@ class TempMailDB:
         self.init_db()
     
     def init_db(self):
-        """Initialize database tables"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Users table - stores user sessions
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -62,7 +58,6 @@ class TempMailDB:
             )
         ''')
         
-        # Messages table - stores message cache
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,7 +75,6 @@ class TempMailDB:
             )
         ''')
         
-        # Attachments table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS attachments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,7 +94,6 @@ class TempMailDB:
         logger.info("Database initialized successfully")
     
     def create_user(self, user_id, email, password, account_id, token):
-        """Create a new user session"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
@@ -118,7 +111,6 @@ class TempMailDB:
             conn.close()
     
     def get_user(self, user_id):
-        """Get user data"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('''
@@ -141,7 +133,6 @@ class TempMailDB:
         return None
     
     def delete_user(self, user_id):
-        """Soft delete user (mark inactive)"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
@@ -158,7 +149,6 @@ class TempMailDB:
             conn.close()
     
     def update_last_checked(self, user_id):
-        """Update last checked timestamp"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
@@ -173,7 +163,6 @@ class TempMailDB:
             conn.close()
     
     def save_messages(self, user_id, messages):
-        """Save messages to database"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
@@ -197,7 +186,6 @@ class TempMailDB:
             conn.close()
     
     def get_messages(self, user_id, limit=20):
-        """Get messages for a user"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('''
@@ -219,7 +207,6 @@ class TempMailDB:
         } for row in results]
     
     def get_message_by_id(self, user_id, message_id):
-        """Get a specific message"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('''
@@ -230,7 +217,6 @@ class TempMailDB:
         result = cursor.fetchone()
         conn.close()
         if result:
-            # Mark as read
             self.mark_message_read(user_id, message_id)
             return {
                 'id': result[0],
@@ -244,7 +230,6 @@ class TempMailDB:
         return None
     
     def mark_message_read(self, user_id, message_id):
-        """Mark message as read"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
@@ -259,7 +244,6 @@ class TempMailDB:
             conn.close()
     
     def update_message_body(self, user_id, message_id, body, html_body=None):
-        """Update message body after fetching"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
@@ -275,7 +259,6 @@ class TempMailDB:
             conn.close()
     
     def delete_all_messages(self, user_id):
-        """Delete all messages for a user"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
@@ -291,7 +274,6 @@ class TempMailDB:
             conn.close()
     
     def get_unread_count(self, user_id):
-        """Get count of unread messages"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('''
@@ -301,23 +283,6 @@ class TempMailDB:
         count = cursor.fetchone()[0]
         conn.close()
         return count
-    
-    def cleanup_old_users(self, days=1):
-        """Remove users older than X days"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        try:
-            cursor.execute('''
-                DELETE FROM users 
-                WHERE created_at < datetime('now', ?)
-            ''', (f'-{days} days',))
-            conn.commit()
-            return cursor.rowcount
-        except sqlite3.Error as e:
-            logger.error(f"DB error: {e}")
-            return 0
-        finally:
-            conn.close()
 
 db = TempMailDB()
 
@@ -328,7 +293,6 @@ class MailTM:
         self.session = requests.Session()
     
     def create_account(self):
-        """Create a temporary email account"""
         domains = self.get_domains()
         if not domains:
             return None
@@ -362,7 +326,6 @@ class MailTM:
         return None
     
     def get_domains(self):
-        """Get available domains"""
         response = self.session.get(f"{self.base_url}/domains")
         if response.status_code == 200:
             data = response.json()
@@ -370,7 +333,6 @@ class MailTM:
         return []
     
     def get_messages(self, token):
-        """Get all messages for an account"""
         headers = {'Authorization': f'Bearer {token}'}
         response = self.session.get(f"{self.base_url}/messages", headers=headers)
         if response.status_code == 200:
@@ -379,7 +341,6 @@ class MailTM:
         return []
     
     def get_message(self, token, message_id):
-        """Get a specific message"""
         headers = {'Authorization': f'Bearer {token}'}
         response = self.session.get(f"{self.base_url}/messages/{message_id}", headers=headers)
         if response.status_code == 200:
@@ -387,7 +348,6 @@ class MailTM:
         return None
     
     def delete_message(self, token, message_id):
-        """Delete a message"""
         headers = {'Authorization': f'Bearer {token}'}
         response = self.session.delete(
             f"{self.base_url}/messages/{message_id}",
@@ -396,7 +356,6 @@ class MailTM:
         return response.status_code == 204
     
     def delete_account(self, token, account_id):
-        """Delete the account"""
         headers = {'Authorization': f'Bearer {token}'}
         response = self.session.delete(
             f"{self.base_url}/accounts/{account_id}",
@@ -408,7 +367,6 @@ mail_api = MailTM()
 
 # -------------------- FORCE JOIN HELPERS --------------------
 async def is_user_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check if the user is a member of the required channel."""
     user_id = update.effective_user.id
     try:
         chat = await context.bot.get_chat(CHANNEL_USERNAME)
@@ -419,7 +377,6 @@ async def is_user_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return False
 
 async def send_force_join_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send force join channel message with HTML formatting and colorful buttons"""
     text = (
         "<b>🔒 🔐 CHANNEL ACCESS REQUIRED 🔐 🔒</b>\n\n"
         "<b>🌟 You need to join our official channel to use this bot!</b> 🌟\n\n"
@@ -436,35 +393,23 @@ async def send_force_join_message(update: Update, context: ContextTypes.DEFAULT_
     
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 JOIN CHANNEL 📢", url=CHANNEL_LINK)],
-        [InlineKeyboardButton("✅ I'VE JOINED ✅", callback_data="check_join")],
-        [InlineKeyboardButton("🔄 CHECK AGAIN 🔄", callback_data="check_join")]
+        [InlineKeyboardButton("✅ I'VE JOINED ✅", callback_data="check_join")]
     ])
     
     if update.callback_query:
         query = update.callback_query
         await query.answer()
-        await query.edit_message_text(
-            text,
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
     elif update.message:
-        await update.message.reply_text(
-            text,
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
+        await update.message.reply_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback for 'I've Joined' button - recheck membership."""
     query = update.callback_query
     await query.answer()
     
     if await is_user_member(update, context):
-        # User is now a member, show main menu
         await show_main_menu(update, context)
     else:
-        # Still not a member
         text = (
             "<b>❌ ❌ NOT A MEMBER YET</b> ❌ ❌\n\n"
             "You are still not a member of the channel.\n\n"
@@ -481,62 +426,37 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             [InlineKeyboardButton("✅ I'VE JOINED ✅", callback_data="check_join")]
         ])
         
-        await query.edit_message_text(
-            text,
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
-# -------------------- COLORFUL UI HELPERS --------------------
-def get_colorful_main_menu(user_exists=False, unread=0, email=""):
-    """Create colorful main menu buttons"""
+# -------------------- UI HELPERS --------------------
+def get_colorful_main_menu(user_exists=False, unread=0):
     keyboard = []
     
     if user_exists:
-        # Row 1: Inbox with unread count
         inbox_text = f"📬 CHECK INBOX"
         if unread > 0:
             inbox_text += f" 🔴 +{unread}"
-        keyboard.append([
-            InlineKeyboardButton(inbox_text, callback_data="inbox")
-        ])
-        
-        # Row 2: Refresh and New Email
+        keyboard.append([InlineKeyboardButton(inbox_text, callback_data="inbox")])
         keyboard.append([
             InlineKeyboardButton("🔄 REFRESH 🔄", callback_data="refresh"),
             InlineKeyboardButton("📝 NEW EMAIL ✨", callback_data="new_email")
         ])
-        
-        # Row 3: Delete Account
-        keyboard.append([
-            InlineKeyboardButton("🗑️ DELETE ACCOUNT ❌", callback_data="delete_account")
-        ])
+        keyboard.append([InlineKeyboardButton("🗑️ DELETE ACCOUNT ❌", callback_data="delete_account")])
     else:
-        # Row 1: Create Email
-        keyboard.append([
-            InlineKeyboardButton("📧 CREATE TEMP EMAIL 🚀", callback_data="create_email")
-        ])
+        keyboard.append([InlineKeyboardButton("📧 CREATE TEMP EMAIL 🚀", callback_data="create_email")])
     
-    # Row 4: Help
-    keyboard.append([
-        InlineKeyboardButton("ℹ️ HELP 📖", callback_data="help")
-    ])
-    
+    keyboard.append([InlineKeyboardButton("ℹ️ HELP 📖", callback_data="help")])
     return InlineKeyboardMarkup(keyboard)
 
 def get_colorful_back_menu():
-    """Create colorful back button"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 BACK TO MENU 🏠", callback_data="menu")]
     ])
 
 def get_colorful_inbox_buttons(messages, page=0, total_pages=1):
-    """Create colorful inbox navigation buttons"""
     keyboard = []
     
-    # Message buttons with colors
     for i, msg in enumerate(messages[:10], 1):
-        # Color indicators
         if msg['is_read']:
             status = "📖 READ"
             color = "🔵"
@@ -554,7 +474,6 @@ def get_colorful_inbox_buttons(messages, page=0, total_pages=1):
             )
         ])
     
-    # Pagination
     if total_pages > 1:
         nav_buttons = []
         if page > 0:
@@ -564,36 +483,27 @@ def get_colorful_inbox_buttons(messages, page=0, total_pages=1):
         if nav_buttons:
             keyboard.append(nav_buttons)
     
-    # Action buttons
     keyboard.append([
         InlineKeyboardButton("🔄 REFRESH", callback_data="refresh"),
         InlineKeyboardButton("🗑️ DELETE ALL", callback_data="delete_all_messages")
     ])
-    keyboard.append([
-        InlineKeyboardButton("🔙 BACK TO MENU 🏠", callback_data="menu")
-    ])
+    keyboard.append([InlineKeyboardButton("🔙 BACK TO MENU 🏠", callback_data="menu")])
     
     return InlineKeyboardMarkup(keyboard)
 
 def get_confirmation_buttons(action="delete"):
-    """Create confirmation buttons"""
     if action == "delete":
         return InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ YES, DELETE ✅", callback_data="confirm_delete"),
-                InlineKeyboardButton("❌ CANCEL ❌", callback_data="menu")
-            ]
+            [InlineKeyboardButton("✅ YES, DELETE ✅", callback_data="confirm_delete"),
+             InlineKeyboardButton("❌ CANCEL ❌", callback_data="menu")]
         ])
     elif action == "new_email":
         return InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ YES, CREATE NEW ✅", callback_data="create_email"),
-                InlineKeyboardButton("❌ CANCEL ❌", callback_data="menu")
-            ]
+            [InlineKeyboardButton("✅ YES, CREATE NEW ✅", callback_data="create_email"),
+             InlineKeyboardButton("❌ CANCEL ❌", callback_data="menu")]
         ])
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show the main menu with HTML formatting and colorful buttons"""
     user_id = update.effective_user.id
     user = db.get_user(user_id)
     
@@ -628,29 +538,18 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if update.callback_query:
         query = update.callback_query
-        await query.edit_message_text(
-            text,
-            reply_markup=reply_markup,
-            parse_mode="HTML"
-        )
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
     else:
-        await update.message.reply_text(
-            text,
-            reply_markup=reply_markup,
-            parse_mode="HTML"
-        )
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="HTML")
 
 # -------------------- BOT HANDLERS --------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command - check membership first"""
     if not await is_user_member(update, context):
         await send_force_join_message(update, context)
         return
     await show_main_menu(update, context)
 
 async def create_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Create a new temporary email"""
-    # Check membership first
     if not await is_user_member(update, context):
         await send_force_join_message(update, context)
         return
@@ -660,7 +559,6 @@ async def create_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     
-    # Delete old account if exists
     if db.get_user(user_id):
         user = db.get_user(user_id)
         mail_api.delete_account(user['token'], user['account_id'])
@@ -683,7 +581,6 @@ async def create_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Store in database
     db.create_user(
         user_id,
         account['email'],
@@ -705,21 +602,10 @@ async def create_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👇 <b>Check your inbox using the buttons below:</b>"
     )
     
-    reply_markup = get_colorful_main_menu(
-        user_exists=True,
-        unread=0,
-        email=account['email']
-    )
-    
-    await query.edit_message_text(
-        text,
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
+    reply_markup = get_colorful_main_menu(user_exists=True, unread=0)
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
 
 async def check_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check inbox for messages"""
-    # Check membership first
     if not await is_user_member(update, context):
         await send_force_join_message(update, context)
         return
@@ -745,28 +631,31 @@ async def check_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
     
-    # Fetch messages from API
     messages = mail_api.get_messages(user['token'])
     
     if messages:
-        # Save to database
         db.save_messages(user_id, messages)
         
-        # Fetch message bodies for first 5 messages
-        for msg in messages[:5]:
-            if not db.get_message_by_id(user_id, msg['id']):
+        for msg in messages[:10]:
+            existing = db.get_message_by_id(user_id, msg['id'])
+            if not existing or not existing.get('body'):
                 full_msg = mail_api.get_message(user['token'], msg['id'])
                 if full_msg:
+                    text_content = full_msg.get('text', '')
+                    html_content = full_msg.get('html', [''])[0] if full_msg.get('html') else None
+                    
+                    if not text_content and html_content:
+                        text_content = re.sub(r'<[^>]+>', ' ', html_content)
+                        text_content = ' '.join(text_content.split())
+                    
                     db.update_message_body(
                         user_id,
                         msg['id'],
-                        full_msg.get('text', ''),
-                        full_msg.get('html', [''])[0] if full_msg.get('html') else None
+                        text_content or 'No text content available',
+                        html_content
                     )
     
     db.update_last_checked(user_id)
-    
-    # Get messages from database
     cached_messages = db.get_messages(user_id)
     
     if not cached_messages:
@@ -783,14 +672,9 @@ async def check_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 BACK TO MENU 🏠", callback_data="menu")]
         ])
         
-        await query.edit_message_text(
-            text,
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
+        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
         return
     
-    # Build message list with HTML formatting
     total_pages = (len(cached_messages) + 9) // 10
     page = context.user_data.get('inbox_page', 0)
     
@@ -816,20 +700,10 @@ async def check_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(cached_messages) > 10:
         text += f"\n... and {len(cached_messages) - 10} more messages\n"
     
-    reply_markup = get_colorful_inbox_buttons(
-        page_messages,
-        page=page,
-        total_pages=total_pages
-    )
-    
-    await query.edit_message_text(
-        text,
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
+    reply_markup = get_colorful_inbox_buttons(page_messages, page=page, total_pages=total_pages)
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="HTML")
 
 async def inbox_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle inbox pagination"""
     query = update.callback_query
     await query.answer()
     
@@ -838,8 +712,6 @@ async def inbox_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await check_inbox(update, context)
 
 async def read_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Read a specific message"""
-    # Check membership first
     if not await is_user_member(update, context):
         await send_force_join_message(update, context)
         return
@@ -861,18 +733,28 @@ async def read_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Get message from database
+    await query.edit_message_text(
+        "<b>⏳ FETCHING MESSAGE CONTENT...</b>",
+        parse_mode="HTML"
+    )
+    
     msg = db.get_message_by_id(user_id, message_id)
     
-    if not msg:
-        # Try to fetch from API
+    if not msg or not msg.get('body') or msg.get('body') == 'No text content available':
         full_msg = mail_api.get_message(user['token'], message_id)
         if full_msg:
+            text_content = full_msg.get('text', '')
+            html_content = full_msg.get('html', [''])[0] if full_msg.get('html') else None
+            
+            if not text_content and html_content:
+                text_content = re.sub(r'<[^>]+>', ' ', html_content)
+                text_content = ' '.join(text_content.split())
+            
             db.update_message_body(
                 user_id,
                 message_id,
-                full_msg.get('text', ''),
-                full_msg.get('html', [''])[0] if full_msg.get('html') else None
+                text_content or 'No text content available',
+                html_content
             )
             msg = db.get_message_by_id(user_id, message_id)
     
@@ -887,7 +769,6 @@ async def read_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Display message with HTML formatting
     text = (
         f"<b>📧 📧 MESSAGE DETAILS</b> 📧 📧\n\n"
         f"<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n"
@@ -897,13 +778,19 @@ async def read_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
     )
     
-    if msg['body']:
-        body = msg['body'][:1000]
-        text += f"<b>Message:</b>\n{body}"
-        if len(msg['body']) > 1000:
-            text += "\n\n... (message truncated)"
+    if msg.get('body') and msg['body'] != 'No text content available':
+        body = msg['body'][:3000]
+        body = body.replace('\r\n', '\n').replace('\r', '\n')
+        body = '\n'.join(line.strip() for line in body.split('\n') if line.strip())
+        
+        if body:
+            text += f"<b>📝 Message:</b>\n<pre>{body}</pre>"
+            if len(msg['body']) > 3000:
+                text += "\n\n... (message truncated)"
+        else:
+            text += "<b>📝 Message:</b> (Empty message)"
     else:
-        text += "<b>Message:</b> (No text content)"
+        text += "<b>📝 Message:</b> (No text content available)"
     
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 REFRESH", callback_data="refresh")],
@@ -912,15 +799,9 @@ async def read_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔙 BACK TO MENU 🏠", callback_data="menu")]
     ])
     
-    await query.edit_message_text(
-        text,
-        reply_markup=keyboard,
-        parse_mode="HTML"
-    )
+    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete a specific message"""
-    # Check membership first
     if not await is_user_member(update, context):
         await send_force_join_message(update, context)
         return
@@ -934,7 +815,7 @@ async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = db.get_user(user_id)
     if user:
         mail_api.delete_message(user['token'], message_id)
-        db.delete_all_messages(user_id)  # Remove from cache
+        db.delete_all_messages(user_id)
     
     await query.edit_message_text(
         "<b>✅ ✅ MESSAGE DELETED!</b> ✅ ✅\n\n"
@@ -947,8 +828,6 @@ async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def delete_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete all messages"""
-    # Check membership first
     if not await is_user_member(update, context):
         await send_force_join_message(update, context)
         return
@@ -970,8 +849,6 @@ async def delete_all_messages(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def refresh_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Refresh inbox and fetch new messages"""
-    # Check membership first
     if not await is_user_member(update, context):
         await send_force_join_message(update, context)
         return
@@ -981,8 +858,6 @@ async def refresh_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await check_inbox(update, context)
 
 async def new_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Create a new email (delete old one)"""
-    # Check membership first
     if not await is_user_member(update, context):
         await send_force_join_message(update, context)
         return
@@ -999,15 +874,9 @@ async def new_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>━━━━━━━━━━━━━━━━━━━━━━</b>"
     )
     
-    await query.edit_message_text(
-        text,
-        reply_markup=get_confirmation_buttons("new_email"),
-        parse_mode="HTML"
-    )
+    await query.edit_message_text(text, reply_markup=get_confirmation_buttons("new_email"), parse_mode="HTML")
 
 async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete the email account"""
-    # Check membership first
     if not await is_user_member(update, context):
         await send_force_join_message(update, context)
         return
@@ -1024,15 +893,9 @@ async def delete_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>━━━━━━━━━━━━━━━━━━━━━━</b>"
     )
     
-    await query.edit_message_text(
-        text,
-        reply_markup=get_confirmation_buttons("delete"),
-        parse_mode="HTML"
-    )
+    await query.edit_message_text(text, reply_markup=get_confirmation_buttons("delete"), parse_mode="HTML")
 
 async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Confirm account deletion"""
-    # Check membership first
     if not await is_user_member(update, context):
         await send_force_join_message(update, context)
         return
@@ -1059,8 +922,6 @@ async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show help message"""
-    # Check membership first
     if not await is_user_member(update, context):
         await send_force_join_message(update, context)
         return
@@ -1099,8 +960,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Return to main menu"""
-    # Check membership first
     if not await is_user_member(update, context):
         await send_force_join_message(update, context)
         return
@@ -1110,8 +969,6 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_main_menu(update, context)
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages (not commands)"""
-    # Check membership first
     if not await is_user_member(update, context):
         await send_force_join_message(update, context)
         return
@@ -1124,18 +981,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # -------------------- MAIN --------------------
 def main():
-    """Start the bot"""
     try:
-        # Create application with token from environment variable
         application = Application.builder().token(BOT_TOKEN).build()
         
-        # Command handlers
         application.add_handler(CommandHandler("start", start))
-        
-        # Message handlers
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
         
-        # Callback handlers
         application.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
         application.add_handler(CallbackQueryHandler(create_email, pattern="^create_email$"))
         application.add_handler(CallbackQueryHandler(check_inbox, pattern="^inbox$"))
@@ -1150,7 +1001,6 @@ def main():
         application.add_handler(CallbackQueryHandler(help_command, pattern="^help$"))
         application.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
         
-        # Start the bot
         logger.info("🤖 Temp Mail Bot is starting...")
         logger.info(f"📊 Database: {DB_PATH}")
         logger.info(f"✅ Force join channel: {CHANNEL_USERNAME}")
