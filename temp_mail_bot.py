@@ -7,12 +7,14 @@ import re
 import sqlite3
 import random
 import string
+import threading
+import asyncio
 from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 import logging
 
-# -------------------- LOGGING SETUP --------------------
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -26,6 +28,11 @@ CHANNEL_LINK = os.environ.get('CHANNEL_LINK', 'https://t.me/NCK_Dev')
 API_BASE = os.environ.get('API_BASE', 'https://api.mail.tm')
 DB_PATH = os.environ.get('DB_PATH', 'temp_mail.db')
 
+# Render deployment variables
+RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', '')
+PORT = int(os.environ.get('PORT', 8080))
+KEEP_ALIVE_INTERVAL = int(os.environ.get('KEEP_ALIVE_INTERVAL', 600))  # 10 minutes
+
 if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN environment variable is not set!")
     logger.error("Please set BOT_TOKEN in your environment variables.")
@@ -34,6 +41,94 @@ if not BOT_TOKEN:
 logger.info("✅ Environment variables loaded successfully")
 logger.info(f"📢 Channel: {CHANNEL_USERNAME}")
 logger.info(f"📊 Database: {DB_PATH}")
+logger.info(f"🌐 Render URL: {RENDER_EXTERNAL_URL or 'Not set (local mode)'}")
+logger.info(f"🔌 Port: {PORT}")
+
+# -------------------- HEALTH CHECK SERVER --------------------
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """HTTP handler for Render health checks"""
+    
+    def do_GET(self):
+        """Handle GET requests"""
+        if self.path == '/' or self.path == '/health' or self.path == '/healthz':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+            
+            response = {
+                'status': 'healthy',
+                'service': 'temp-mail-bot',
+                'timestamp': datetime.now().isoformat(),
+                'uptime': time.time() - START_TIME
+            }
+            self.wfile.write(json.dumps(response).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b'Not Found')
+    
+    def do_HEAD(self):
+        """Handle HEAD requests"""
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+    
+    def log_message(self, format, *args):
+        """Suppress default logging to avoid spam"""
+        pass
+
+def run_health_server():
+    """Run the health check server in a separate thread"""
+    try:
+        server = HTTPServer(('0.0.0.0', PORT), HealthCheckHandler)
+        logger.info(f"🏥 Health check server running on port {PORT}")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"❌ Health server error: {e}")
+
+def start_health_server():
+    """Start the health server in a background thread"""
+    thread = threading.Thread(target=run_health_server, daemon=True)
+    thread.start()
+    return thread
+
+# -------------------- KEEP ALIVE PING --------------------
+def keep_alive_ping():
+    """Ping the Render URL periodically to keep the service alive"""
+    if not RENDER_EXTERNAL_URL:
+        logger.info("ℹ️ No RENDER_EXTERNAL_URL set, skipping keep-alive pings")
+        return
+    
+    # Wait a bit before starting pings
+    time.sleep(30)
+    
+    logger.info(f"💓 Keep-alive started (interval: {KEEP_ALIVE_INTERVAL}s)")
+    
+    while True:
+        try:
+            time.sleep(KEEP_ALIVE_INTERVAL)
+            response = requests.get(
+                f"{RENDER_EXTERNAL_URL}/health",
+                timeout=30
+            )
+            if response.status_code == 200:
+                logger.info(f"💓 Keep-alive ping OK ({response.status_code})")
+            else:
+                logger.warning(f"⚠️ Keep-alive ping returned {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"⚠️ Keep-alive ping failed: {e}")
+        except Exception as e:
+            logger.error(f"❌ Keep-alive error: {e}")
+
+def start_keep_alive():
+    """Start the keep-alive pinger in a background thread"""
+    thread = threading.Thread(target=keep_alive_ping, daemon=True)
+    thread.start()
+    return thread
+
+# Track start time for uptime
+START_TIME = time.time()
 
 # -------------------- DATABASE CLASS --------------------
 class TempMailDB:
@@ -136,10 +231,7 @@ class TempMailDB:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
-            cursor.execute('''
-                UPDATE users SET is_active = 0
-                WHERE user_id = ?
-            ''', (user_id,))
+            cursor.execute('UPDATE users SET is_active = 0 WHERE user_id = ?', (user_id,))
             conn.commit()
             return True
         except sqlite3.Error as e:
@@ -153,8 +245,7 @@ class TempMailDB:
         cursor = conn.cursor()
         try:
             cursor.execute('''
-                UPDATE users SET last_checked = CURRENT_TIMESTAMP
-                WHERE user_id = ?
+                UPDATE users SET last_checked = CURRENT_TIMESTAMP WHERE user_id = ?
             ''', (user_id,))
             conn.commit()
         except sqlite3.Error as e:
@@ -262,9 +353,7 @@ class TempMailDB:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
-            cursor.execute('''
-                DELETE FROM messages WHERE user_id = ?
-            ''', (user_id,))
+            cursor.execute('DELETE FROM messages WHERE user_id = ?', (user_id,))
             conn.commit()
             return True
         except sqlite3.Error as e:
@@ -806,8 +895,7 @@ async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_force_join_message(update, context)
         return
     
-    query = update.callback_query
-    await query.answer()
+    query = update.callback_query    await query.answer()
     
     user_id = update.effective_user.id
     message_id = query.data.replace("delete_msg_", "")
@@ -982,6 +1070,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # -------------------- MAIN --------------------
 def main():
     try:
+        # Start health check server
+        logger.info("🏥 Starting health check server...")
+        start_health_server()
+        
+        # Start keep-alive pinger (only if RENDER_EXTERNAL_URL is set)
+        if RENDER_EXTERNAL_URL:
+            logger.info("💓 Starting keep-alive pinger...")
+            start_keep_alive()
+        else:
+            logger.info("ℹ️ RENDER_EXTERNAL_URL not set, skipping keep-alive")
+        
+        # Build Telegram application
         application = Application.builder().token(BOT_TOKEN).build()
         
         application.add_handler(CommandHandler("start", start))
@@ -1006,7 +1106,9 @@ def main():
         logger.info(f"✅ Force join channel: {CHANNEL_USERNAME}")
         logger.info("✅ Powered by mail.tm API")
         logger.info("✅ HTML formatting enabled")
-        logger.info("✅ Environment variables loaded")
+        logger.info("✅ Health check server running")
+        if RENDER_EXTERNAL_URL:
+            logger.info(f"✅ Keep-alive pinger active ({KEEP_ALIVE_INTERVAL}s interval)")
         
         application.run_polling(allowed_updates=Update.ALL_TYPES)
         
