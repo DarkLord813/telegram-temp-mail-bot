@@ -8,15 +8,17 @@ import sqlite3
 import random
 import string
 import threading
+import base64
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram.error import TelegramError
 import logging
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s %(levelname)s %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -26,92 +28,66 @@ CHANNEL_USERNAME = os.environ.get('CHANNEL_USERNAME', '@NCK_Dev')
 CHANNEL_LINK = os.environ.get('CHANNEL_LINK', 'https://t.me/NCK_Dev')
 API_BASE = os.environ.get('API_BASE', 'https://api.mail.tm')
 DB_PATH = os.environ.get('DB_PATH', 'temp_mail.db')
-RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL', '')
-PORT = int(os.environ.get('PORT', 8080))
-KEEP_ALIVE_INTERVAL = int(os.environ.get('KEEP_ALIVE_INTERVAL', 600))
 
 if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN environment variable is not set!")
     sys.exit(1)
 
-logger.info("✅ Environment variables loaded successfully")
+logger.info("✅ Environment variables loaded")
 logger.info(f"📢 Channel: {CHANNEL_USERNAME}")
 logger.info(f"📊 Database: {DB_PATH}")
-logger.info(f"🌐 Render URL: {RENDER_EXTERNAL_URL or 'Not set'}")
-logger.info(f"🔌 Port: {PORT}")
-
-# Track start time for uptime
-START_TIME = time.time()
-
-# -------------------- HEALTH CHECK SERVER --------------------
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path in ('/', '/health', '/healthz'):
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.send_header('Cache-Control', 'no-cache')
-            self.end_headers()
-            response = {
-                'status': 'healthy',
-                'service': 'temp-mail-bot',
-                'timestamp': datetime.now().isoformat(),
-                'uptime': time.time() - START_TIME
-            }
-            self.wfile.write(json.dumps(response).encode())
-        else:
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b'Not Found')
-
-    def do_HEAD(self):
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-
-    def log_message(self, format, *args):
-        pass
 
 
-def run_health_server():
-    try:
-        server = HTTPServer(('0.0.0.0', PORT), HealthCheckHandler)
-        logger.info(f"🏥 Health check server running on port {PORT}")
-        server.serve_forever()
-    except Exception as e:
-        logger.error(f"❌ Health server error: {e}")
-
-
+# -------------------- HEALTH SERVER (Star Cards style) --------------------
 def start_health_server():
-    thread = threading.Thread(target=run_health_server, daemon=True)
-    thread.start()
-    return thread
+    """Start a minimal HTTP server for Render health checks."""
+    port = int(os.getenv("PORT", "8080"))
 
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"OK")
 
-# -------------------- KEEP ALIVE PING --------------------
-def keep_alive_ping():
-    if not RENDER_EXTERNAL_URL:
-        logger.info("ℹ️ No RENDER_EXTERNAL_URL set, skipping keep-alive pings")
-        return
-    time.sleep(30)
-    logger.info(f"💓 Keep-alive started (interval: {KEEP_ALIVE_INTERVAL}s)")
-    while True:
+        def do_HEAD(self):
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    def serve():
         try:
-            time.sleep(KEEP_ALIVE_INTERVAL)
-            response = requests.get(f"{RENDER_EXTERNAL_URL}/health", timeout=30)
-            if response.status_code == 200:
-                logger.info(f"💓 Keep-alive ping OK ({response.status_code})")
-            else:
-                logger.warning(f"⚠️ Keep-alive ping returned {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"⚠️ Keep-alive ping failed: {e}")
+            HTTPServer(("0.0.0.0", port), H).serve_forever()
         except Exception as e:
-            logger.error(f"❌ Keep-alive error: {e}")
+            logger.warning(f"health server failed: {e}")
+
+    threading.Thread(target=serve, daemon=True, name="health").start()
+    logger.info(f"🏥 health server on :{port}")
 
 
-def start_keep_alive():
-    thread = threading.Thread(target=keep_alive_ping, daemon=True)
-    thread.start()
-    return thread
+# -------------------- KEEP-ALIVE LOOP (Star Cards style) --------------------
+def start_keepalive_loop(interval=600):
+    """Ping the Render external URL every `interval` seconds."""
+    url = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("KEEPALIVE_URL", "")
+    if not url:
+        logger.info("ℹ️ keepalive disabled (no RENDER_EXTERNAL_URL)")
+        return
+
+    ping_url = url.rstrip("/") + "/"
+
+    def loop():
+        while True:
+            time.sleep(interval)
+            try:
+                r = requests.get(ping_url, timeout=10)
+                logger.info(f"💓 keepalive ping {ping_url} → {r.status_code}")
+            except Exception as e:
+                logger.warning(f"⚠️ keepalive ping failed: {e}")
+
+    threading.Thread(target=loop, daemon=True, name="keepalive").start()
+    logger.info(f"💓 keepalive loop started ({interval}s → {ping_url})")
 
 
 # -------------------- DATABASE CLASS --------------------
@@ -170,7 +146,7 @@ class TempMailDB:
 
         conn.commit()
         conn.close()
-        logger.info("Database initialized successfully")
+        logger.info("✅ Database initialized")
 
     def create_user(self, user_id, email, password, account_id, token):
         conn = sqlite3.connect(self.db_path)
@@ -1078,16 +1054,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # -------------------- MAIN --------------------
 def main():
+    # Star Cards style: start health server + keepalive FIRST
+    start_health_server()
+    start_keepalive_loop(interval=600)
+
     try:
-        logger.info("🏥 Starting health check server...")
-        start_health_server()
-
-        if RENDER_EXTERNAL_URL:
-            logger.info("💓 Starting keep-alive pinger...")
-            start_keep_alive()
-        else:
-            logger.info("ℹ️ RENDER_EXTERNAL_URL not set, skipping keep-alive")
-
         application = Application.builder().token(BOT_TOKEN).build()
 
         application.add_handler(CommandHandler("start", start))
@@ -1107,14 +1078,10 @@ def main():
         application.add_handler(CallbackQueryHandler(help_command, pattern="^help$"))
         application.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
 
-        logger.info("🤖 Temp Mail Bot is starting...")
+        logger.info("🤖 Temp Mail Bot starting...")
         logger.info(f"📊 Database: {DB_PATH}")
-        logger.info(f"✅ Force join channel: {CHANNEL_USERNAME}")
+        logger.info(f"📢 Force join: {CHANNEL_USERNAME}")
         logger.info("✅ Powered by mail.tm API")
-        logger.info("✅ HTML formatting enabled")
-        logger.info("✅ Health check server running")
-        if RENDER_EXTERNAL_URL:
-            logger.info(f"✅ Keep-alive pinger active ({KEEP_ALIVE_INTERVAL}s interval)")
 
         application.run_polling(allowed_updates=Update.ALL_TYPES)
 
