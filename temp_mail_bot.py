@@ -8,7 +8,6 @@ import sqlite3
 import random
 import string
 import threading
-import base64
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -24,23 +23,29 @@ logger = logging.getLogger(__name__)
 
 # -------------------- ENVIRONMENT VARIABLES --------------------
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-CHANNEL_USERNAME = os.environ.get('CHANNEL_USERNAME', '@NCK_Dev')
-CHANNEL_LINK = os.environ.get('CHANNEL_LINK', 'https://t.me/NCK_Dev')
 API_BASE = os.environ.get('API_BASE', 'https://api.mail.tm')
 DB_PATH = os.environ.get('DB_PATH', 'temp_mail.db')
+
+# -------------------- FORCE JOIN CHANNELS --------------------
+# Add or remove channels here. Format: (username, link)
+FORCE_CHANNELS = [
+    ("@NCK_Dev",       "https://t.me/NCK_Dev"),
+    ("@NCKDEVFreeSC",  "https://t.me/NCKDEVFreeSC"),
+    ("@ERRORX404E",    "https://t.me/ERRORX404E"),
+]
 
 if not BOT_TOKEN:
     logger.error("❌ BOT_TOKEN environment variable is not set!")
     sys.exit(1)
 
 logger.info("✅ Environment variables loaded")
-logger.info(f"📢 Channel: {CHANNEL_USERNAME}")
+logger.info(f"📢 Force join channels: {', '.join(ch for ch, _ in FORCE_CHANNELS)}")
 logger.info(f"📊 Database: {DB_PATH}")
 
 
-# -------------------- HEALTH SERVER (Star Cards style) --------------------
+# ==================== HEALTH CHECK SERVER (Star Cards style) ====================
 def start_health_server():
-    """Start a minimal HTTP server for Render health checks."""
+    """Minimal HTTP server responding 'OK' on any path."""
     port = int(os.getenv("PORT", "8080"))
 
     class H(BaseHTTPRequestHandler):
@@ -64,30 +69,49 @@ def start_health_server():
             logger.warning(f"health server failed: {e}")
 
     threading.Thread(target=serve, daemon=True, name="health").start()
-    logger.info(f"🏥 health server on :{port}")
+    logger.info(f"🏥 Health server on :{port}")
 
 
-# -------------------- KEEP-ALIVE LOOP (Star Cards style) --------------------
-def start_keepalive_loop(interval=600):
-    """Ping the Render external URL every `interval` seconds."""
+# ==================== KEEP-ALIVE (Star Cards style) ====================
+def _self_ping_thread():
+    """
+    Star Cards style keep-alive:
+      - Primary URL: RENDER_EXTERNAL_URL (always set by Render)
+      - Fallback:    KEEPALIVE_URL env var
+      - Last resort: localhost
+      - Pings the root path '/' every 10 minutes
+    """
     url = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("KEEPALIVE_URL", "")
-    if not url:
-        logger.info("ℹ️ keepalive disabled (no RENDER_EXTERNAL_URL)")
-        return
+    if url:
+        ping_url = url.rstrip("/") + "/"
+    else:
+        port = int(os.environ.get("PORT", 8080))
+        ping_url = f"http://localhost:{port}/"
 
-    ping_url = url.rstrip("/") + "/"
+    time.sleep(30)
+    logger.info(f"💓 Keep-alive started → {ping_url}")
 
-    def loop():
-        while True:
-            time.sleep(interval)
-            try:
-                r = requests.get(ping_url, timeout=10)
-                logger.info(f"💓 keepalive ping {ping_url} → {r.status_code}")
-            except Exception as e:
-                logger.warning(f"⚠️ keepalive ping failed: {e}")
+    consecutive_failures = 0
+    while True:
+        try:
+            req = requests.get(ping_url, timeout=15,
+                               headers={"User-Agent": "TempMailBot-KeepAlive/1.0"})
+            if consecutive_failures > 0:
+                logger.info(f"💓 Keep-alive recovered after {consecutive_failures} failures")
+            consecutive_failures = 0
+            logger.info(f"💓 Keep-alive ping OK ({ping_url}) → {req.status_code}")
+        except Exception as e:
+            consecutive_failures += 1
+            logger.warning(f"⚠️ Keep-alive ping failed ({ping_url}) [x{consecutive_failures}]: {e}")
 
-    threading.Thread(target=loop, daemon=True, name="keepalive").start()
-    logger.info(f"💓 keepalive loop started ({interval}s → {ping_url})")
+            if consecutive_failures >= 3 and not ping_url.startswith("http://localhost"):
+                port = int(os.environ.get("PORT", 8080))
+                fallback = f"http://localhost:{port}/"
+                logger.info(f"🔄 Switching keep-alive target to localhost: {fallback}")
+                ping_url = fallback
+                consecutive_failures = 0
+
+        time.sleep(600)
 
 
 # -------------------- DATABASE CLASS --------------------
@@ -416,37 +440,63 @@ class MailTM:
 mail_api = MailTM()
 
 
-# -------------------- FORCE JOIN HELPERS --------------------
-async def is_user_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    user_id = update.effective_user.id
+# -------------------- FORCE JOIN HELPERS (Multi-Channel) --------------------
+async def check_single_channel(context: ContextTypes.DEFAULT_TYPE, channel: str, user_id: int) -> bool:
+    """Return True if user is a member of the given channel."""
     try:
-        chat = await context.bot.get_chat(CHANNEL_USERNAME)
+        chat = await context.bot.get_chat(channel)
         member = await context.bot.get_chat_member(chat.id, user_id)
         return member.status in ["creator", "administrator", "member"]
     except Exception as e:
-        logger.error(f"Membership check error: {e}")
+        logger.error(f"Membership check error for {channel}: {e}")
         return False
 
 
-async def send_force_join_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_missing_channels(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> list:
+    """Return list of channels the user has NOT joined yet."""
+    missing = []
+    for channel, link in FORCE_CHANNELS:
+        if not await check_single_channel(context, channel, user_id):
+            missing.append((channel, link))
+    return missing
+
+
+async def is_user_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """True only if user has joined ALL required channels."""
+    user_id = update.effective_user.id
+    missing = await get_missing_channels(context, user_id)
+    return len(missing) == 0
+
+
+async def send_force_join_message(update: Update, context: ContextTypes.DEFAULT_TYPE, missing: list = None):
+    """Send force-join prompt, showing only the channels the user hasn't joined."""
+    if missing is None:
+        missing = await get_missing_channels(context, update.effective_user.id)
+
+    # Build channel list text
+    channel_lines = "\n".join(f"📢 <b>{ch}</b>" for ch, _ in missing)
+
     text = (
         "<b>🔒 🔐 CHANNEL ACCESS REQUIRED 🔐 🔒</b>\n\n"
-        "<b>🌟 You need to join our official channel to use this bot!</b> 🌟\n\n"
+        "<b>🌟 You need to join our official channels to use this bot!</b> 🌟\n\n"
         "<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n"
-        f"📢 <b>Channel:</b> <a href='{CHANNEL_LINK}'>{CHANNEL_USERNAME}</a>\n"
+        f"{channel_lines}\n"
         "<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
         "<b>✨ Benefits of joining:</b>\n"
         "• 📧 Get temporary email addresses\n"
         "• 📬 Receive and read emails\n"
         "• 🔄 Manage your inbox\n"
         "• 🚀 24/7 available\n\n"
-        "<b>👇 Click the button below to join and continue!</b>"
+        "<b>👇 Click each button below to join, then press VERIFY!</b>"
     )
 
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 JOIN CHANNEL 📢", url=CHANNEL_LINK)],
-        [InlineKeyboardButton("✅ I'VE JOINED ✅", callback_data="check_join")]
-    ])
+    # Build one JOIN button per missing channel + verify button
+    keyboard_rows = []
+    for channel, link in missing:
+        keyboard_rows.append([InlineKeyboardButton(f"📢 JOIN {channel} 📢", url=link)])
+    keyboard_rows.append([InlineKeyboardButton("✅ I'VE JOINED — VERIFY ✅", callback_data="check_join")])
+
+    keyboard = InlineKeyboardMarkup(keyboard_rows)
 
     if update.callback_query:
         query = update.callback_query
@@ -459,27 +509,37 @@ async def send_force_join_message(update: Update, context: ContextTypes.DEFAULT_
 async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user_id = update.effective_user.id
 
-    if await is_user_member(update, context):
+    missing = await get_missing_channels(context, user_id)
+
+    if not missing:
+        # All joined — show main menu
         await show_main_menu(update, context)
     else:
+        # Still missing some — show which ones
+        missing_lines = "\n".join(f"❌ <b>{ch}</b>" for ch, _ in missing)
         text = (
-            "<b>❌ ❌ NOT A MEMBER YET</b> ❌ ❌\n\n"
-            "You are still not a member of the channel.\n\n"
-            "1️⃣ Click the <b>JOIN CHANNEL</b> button below\n"
+            f"<b>❌ ❌ STILL MISSING {len(missing)} CHANNEL(S)</b> ❌ ❌\n\n"
+            "You haven't joined the following yet:\n\n"
+            f"{missing_lines}\n\n"
+            "<b>Steps:</b>\n"
+            "1️⃣ Click each <b>JOIN</b> button below\n"
             "2️⃣ Join the channel\n"
-            "3️⃣ Click <b>I'VE JOINED</b> again\n\n"
-            "<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n"
-            f"📢 <b>Channel:</b> <a href='{CHANNEL_LINK}'>{CHANNEL_USERNAME}</a>\n"
+            "3️⃣ Come back and click <b>VERIFY</b>\n\n"
             "<b>━━━━━━━━━━━━━━━━━━━━━━</b>"
         )
 
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 JOIN CHANNEL 📢", url=CHANNEL_LINK)],
-            [InlineKeyboardButton("✅ I'VE JOINED ✅", callback_data="check_join")]
-        ])
+        keyboard_rows = []
+        for channel, link in missing:
+            keyboard_rows.append([InlineKeyboardButton(f"📢 JOIN {channel} 📢", url=link)])
+        keyboard_rows.append([InlineKeyboardButton("✅ I'VE JOINED — VERIFY ✅", callback_data="check_join")])
 
-        await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+        await query.edit_message_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard_rows),
+            parse_mode="HTML"
+        )
 
 
 # -------------------- UI HELPERS --------------------
@@ -999,6 +1059,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    channels_line = " • ".join(ch for ch, _ in FORCE_CHANNELS)
+
     text = (
         "<b>📖 📖 HOW TO USE TEMP MAIL BOT</b> 📖 📖\n\n"
         "<b>1️⃣ Create Email</b>\n"
@@ -1016,7 +1078,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n"
         "⏰ <b>Email expires after 24 hours</b>\n"
         "🔒 <b>All data is stored securely in SQLite database</b>\n"
-        f"📢 <b>Join our channel:</b> <a href='{CHANNEL_LINK}'>{CHANNEL_USERNAME}</a>\n"
+        f"📢 <b>Our channels:</b> {channels_line}\n"
         "<b>━━━━━━━━━━━━━━━━━━━━━━</b>\n\n"
         "💡 <b>Tip:</b> Use this for temporary registrations!"
     )
@@ -1054,11 +1116,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # -------------------- MAIN --------------------
 def main():
-    # Star Cards style: start health server + keepalive FIRST
-    start_health_server()
-    start_keepalive_loop(interval=600)
-
     try:
+        # ── START HEALTH + KEEP-ALIVE FIRST (Star Cards order) ──────
+        start_health_server()
+        threading.Thread(target=_self_ping_thread, daemon=True, name="KeepAlive").start()
+        # ─────────────────────────────────────────────────────────────
+
         application = Application.builder().token(BOT_TOKEN).build()
 
         application.add_handler(CommandHandler("start", start))
@@ -1080,8 +1143,10 @@ def main():
 
         logger.info("🤖 Temp Mail Bot starting...")
         logger.info(f"📊 Database: {DB_PATH}")
-        logger.info(f"📢 Force join: {CHANNEL_USERNAME}")
+        logger.info(f"📢 Force join: {', '.join(ch for ch, _ in FORCE_CHANNELS)}")
         logger.info("✅ Powered by mail.tm API")
+        logger.info("✅ Health check server running")
+        logger.info("✅ Keep-alive pinger active (10 min interval)")
 
         application.run_polling(allowed_updates=Update.ALL_TYPES)
 
